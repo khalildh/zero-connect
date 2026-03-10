@@ -28,7 +28,7 @@ final class AppState: ObservableObject {
     init() {
         let identity = IdentityManager()
         let store = MessageStore()
-        let router = MessageRouter(identity: identity)
+        let router = MessageRouter(identity: identity, store: store)
 
         self.identity = identity
         self.store = store
@@ -44,7 +44,9 @@ final class AppState: ObservableObject {
 
         Task {
             await setupMessageHandler()
+            await setupReceiptHandler()
             await loadPersistedData()
+            await router.relayStore.loadFromDisk()
             await messageQueue.start()
         }
     }
@@ -91,7 +93,7 @@ final class AppState: ObservableObject {
 
     func addContact(from qrString: String) throws {
         let qrIdentity = try QRCodeIdentity.decode(from: qrString)
-        let contact = qrIdentity.toContact()
+        let contact = try qrIdentity.toContact()
 
         guard !contacts.contains(where: { $0.publicKey == contact.publicKey }) else {
             return // Already have this contact
@@ -167,6 +169,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func setupReceiptHandler() async {
+        await router.setReceiptHandler { [weak self] receipt in
+            Task { @MainActor in
+                self?.handleReceivedReceipt(receipt)
+            }
+        }
+    }
+
     private func handleReceivedMessage(_ message: Message, from peer: TransportPeer) {
         // Find the contact by sender public key
         guard let contact = contacts.first(where: { $0.publicKey == message.senderPublicKey }) else {
@@ -199,6 +209,17 @@ final class AppState: ObservableObject {
                     decryptedText: decryptedText
                 )
                 appendMessage(stored, for: contact.id)
+            }
+        }
+    }
+
+    private func handleReceivedReceipt(_ receipt: DeliveryReceipt) {
+        // Find the conversation containing this message and update its delivery state
+        for (contactId, messages) in conversations {
+            if let idx = messages.firstIndex(where: { $0.message.id == receipt.messageId }) {
+                conversations[contactId]?[idx].deliveryState = receipt.status
+                persistMessages(for: contactId)
+                return
             }
         }
     }

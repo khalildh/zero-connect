@@ -165,6 +165,150 @@ struct TransportTests {
         #expect(TransportKind.server.priority > TransportKind.loom.priority)
         #expect(TransportKind.loom.priority > TransportKind.meshtastic.priority)
     }
+
+    @Test("Meshtastic uses compact binary encoding on the wire")
+    func meshtasticCompactEncoding() async throws {
+        let identity = IdentityManager()
+        let router = MessageRouter(identity: identity)
+
+        let meshTransport = MockTransport(kind: .meshtastic)
+        await router.addTransport(meshTransport)
+
+        let contact = Contact(
+            publicKey: Data(repeating: 0, count: 65),
+            displayName: "Mesh User",
+            meshtasticNodeId: 7
+        )
+
+        let meshPeer = TransportPeer(
+            id: "mesh-7",
+            displayName: "Mesh User",
+            transport: .meshtastic,
+            transportIdentifier: "7"
+        )
+
+        await meshTransport.addPeer(meshPeer)
+        await router.refreshPeers()
+
+        let message = Message(
+            senderPublicKey: Data(repeating: 1, count: 33),
+            recipientPublicKey: Data(repeating: 0, count: 65),
+            encryptedPayload: Data([4, 5, 6]),
+            nonce: Data(repeating: 0, count: 12)
+        )
+
+        try await router.send(message, to: contact)
+
+        let sent = await meshTransport.getSentMessages()
+        #expect(sent.count == 1)
+
+        // Wire data should be compact binary, not JSON
+        let wireData = sent[0].0
+        // CompactMessage starts with the UUID (16 bytes), not JSON's '{' (0x7B)
+        #expect(wireData[0] != 0x7B, "Should not be JSON-encoded for Meshtastic")
+
+        // Should be decodable as CompactMessage
+        let decoded = try CompactMessage.decode(wireData)
+        #expect(decoded.id == message.id)
+    }
+
+    @Test("Loom uses JSON envelope encoding on the wire")
+    func loomJsonEncoding() async throws {
+        let identity = IdentityManager()
+        let router = MessageRouter(identity: identity)
+
+        let loomTransport = MockTransport(kind: .loom)
+        await router.addTransport(loomTransport)
+
+        let loomDeviceId = UUID()
+        let contact = Contact(
+            publicKey: Data(repeating: 0, count: 65),
+            displayName: "Loom User",
+            loomDeviceId: loomDeviceId
+        )
+
+        let loomPeer = TransportPeer(
+            id: "loom-\(loomDeviceId.uuidString)",
+            displayName: "Loom User",
+            transport: .loom,
+            transportIdentifier: loomDeviceId.uuidString
+        )
+
+        await loomTransport.addPeer(loomPeer)
+        await router.refreshPeers()
+
+        let message = Message(
+            senderPublicKey: Data([1, 2, 3]),
+            recipientPublicKey: Data(repeating: 0, count: 65),
+            encryptedPayload: Data([4, 5, 6]),
+            nonce: Data([7, 8, 9])
+        )
+
+        try await router.send(message, to: contact)
+
+        let sent = await loomTransport.getSentMessages()
+        #expect(sent.count == 1)
+
+        // Wire data should be JSON TransportEnvelope
+        let envelope = try JSONDecoder().decode(TransportEnvelope.self, from: sent[0].0)
+        if case .message(let decoded) = envelope {
+            #expect(decoded.id == message.id)
+        } else {
+            Issue.record("Expected .message envelope")
+        }
+    }
+
+    @Test("Meshtastic uses compact encoding flag")
+    func compactEncodingFlag() {
+        #expect(TransportKind.meshtastic.usesCompactEncoding == true)
+        #expect(TransportKind.loom.usesCompactEncoding == false)
+        #expect(TransportKind.server.usesCompactEncoding == false)
+    }
+
+    @Test("Large messages are fragmented for Meshtastic")
+    func meshtasticFragmentation() async throws {
+        let identity = IdentityManager()
+        let router = MessageRouter(identity: identity)
+
+        let meshTransport = MockTransport(kind: .meshtastic)
+        await router.addTransport(meshTransport)
+
+        let contact = Contact(
+            publicKey: Data(repeating: 0, count: 65),
+            displayName: "Mesh User",
+            meshtasticNodeId: 7
+        )
+
+        let meshPeer = TransportPeer(
+            id: "mesh-7",
+            displayName: "Mesh User",
+            transport: .meshtastic,
+            transportIdentifier: "7"
+        )
+
+        await meshTransport.addPeer(meshPeer)
+        await router.refreshPeers()
+
+        // Create a message with a large encrypted payload that will exceed LoRa limits
+        let message = Message(
+            senderPublicKey: Data(repeating: 1, count: 65),
+            recipientPublicKey: Data(repeating: 0, count: 65),
+            encryptedPayload: Data(repeating: 42, count: 200),
+            nonce: Data(repeating: 0, count: 12)
+        )
+
+        try await router.send(message, to: contact)
+
+        let sent = await meshTransport.getSentMessages()
+        // With 65+65+200+12+16+3 = 361 bytes compact, should fragment into 2+ packets
+        #expect(sent.count >= 2, "Large message should be fragmented for Meshtastic")
+
+        // Each fragment should fit in LoRa packet
+        for (data, _) in sent {
+            #expect(data.count <= MessageFragmenter.maxLoRaPayload,
+                    "Each fragment should fit in LoRa packet")
+        }
+    }
 }
 
 @Suite("ServerTransport Tests")

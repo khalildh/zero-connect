@@ -130,9 +130,14 @@ struct QRCodeIdentityTests {
         let encoded = try identity.encodeToString()
         let decoded = try QRCodeIdentity.decode(from: encoded)
 
-        #expect(decoded.publicKey == pubKeyData)
+        // QR identity compresses the key (33 bytes) for smaller QR codes
+        #expect(decoded.publicKey == key.publicKey.compressedRepresentation)
         #expect(decoded.displayName == "Ibrahim")
-        #expect(decoded.version == 1)
+        #expect(decoded.version == 2)
+
+        // toContact() should expand back to x963
+        let contact = try decoded.toContact()
+        #expect(contact.publicKey == pubKeyData)
     }
 
     @Test("Invalid base64 throws error")
@@ -148,9 +153,10 @@ struct QRCodeIdentityTests {
         let pubKeyData = key.publicKey.x963Representation
 
         let identity = QRCodeIdentity(publicKey: pubKeyData, displayName: "Fatmata")
-        let contact = identity.toContact()
+        let contact = try identity.toContact()
 
         #expect(contact.displayName == "Fatmata")
+        // QR identity now compresses keys, so contact's key should be the expanded x963
         #expect(contact.publicKey == pubKeyData)
     }
 }

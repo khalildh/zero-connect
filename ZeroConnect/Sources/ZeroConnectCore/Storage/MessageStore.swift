@@ -70,6 +70,21 @@ public actor MessageStore {
         try data.write(to: queueFileURL(), options: .atomic)
     }
 
+    // MARK: - Relay Messages
+
+    public func loadRelayMessages() throws -> [RelayMessage] {
+        let url = relayFileURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([RelayMessage].self, from: data)
+    }
+
+    public func saveRelayMessages(_ messages: [RelayMessage]) throws {
+        try ensureDirectory()
+        let data = try JSONEncoder().encode(messages)
+        try data.write(to: relayFileURL(), options: .atomic)
+    }
+
     // MARK: - Private
 
     private func ensureDirectory(subdirectory: String? = nil) throws {
@@ -92,6 +107,10 @@ public actor MessageStore {
 
     private func queueFileURL() -> URL {
         baseURL.appendingPathComponent("queued-messages.json")
+    }
+
+    private func relayFileURL() -> URL {
+        baseURL.appendingPathComponent("relay-messages.json")
     }
 }
 

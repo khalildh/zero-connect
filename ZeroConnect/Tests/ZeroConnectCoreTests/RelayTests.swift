@@ -105,4 +105,37 @@ struct RelayTests {
         let count = await store.count
         #expect(count <= 100)
     }
+
+    @Test("Relay messages persist to disk and reload")
+    func relayPersistence() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ZCTest-Relay-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let messageStore = MessageStore(directory: tempDir)
+
+        // Store messages with persistence
+        let relay1 = RelayStore(store: messageStore)
+        let msg = Message(
+            senderPublicKey: Data([1, 2, 3]),
+            recipientPublicKey: Data([4, 5, 6]),
+            encryptedPayload: Data([7, 8, 9]),
+            nonce: Data([10, 11, 12])
+        )
+        await relay1.store(msg)
+        #expect(await relay1.count == 1)
+
+        // Allow persistence task to complete
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Load into a new RelayStore — should recover the message
+        let relay2 = RelayStore(store: messageStore)
+        await relay2.loadFromDisk()
+
+        let count = await relay2.count
+        #expect(count == 1)
+
+        let loaded = await relay2.allRelayMessages
+        #expect(loaded[0].message.id == msg.id)
+    }
 }

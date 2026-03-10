@@ -72,7 +72,7 @@ struct ScannerView: View {
         do {
             try appState.addContact(from: code)
             let qrIdentity = try QRCodeIdentity.decode(from: code)
-            addedContact = qrIdentity.toContact()
+            addedContact = try qrIdentity.toContact()
 
             // Auto-dismiss after a brief delay
             Task {

@@ -39,6 +39,11 @@ public enum TransportKind: String, Codable, Sendable, CaseIterable {
         case .meshtastic: return 1
         }
     }
+
+    /// Whether this transport should use compact binary encoding (for bandwidth-constrained links).
+    public var usesCompactEncoding: Bool {
+        self == .meshtastic
+    }
 }
 
 /// Protocol that all transports implement.

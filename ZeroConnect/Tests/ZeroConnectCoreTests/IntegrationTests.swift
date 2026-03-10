@@ -4,6 +4,12 @@ import Testing
 
 @testable import ZeroConnectCore
 
+/// Thread-safe collector for captured values in tests.
+private actor Collector<T: Sendable> {
+    var items: [T] = []
+    func append(_ item: T) { items.append(item) }
+}
+
 @Suite("Integration Tests")
 struct IntegrationTests {
     @Test("Full message flow: encrypt, route, receive, decrypt")
@@ -47,8 +53,12 @@ struct IntegrationTests {
         let sentString = String(data: sentData, encoding: .utf8) ?? ""
         #expect(!sentString.contains("Kusheh"))
 
-        // Bob receives and decrypts
-        let receivedMessage = try JSONDecoder().decode(Message.self, from: sentData)
+        // Bob receives and decrypts — wire format is TransportEnvelope
+        let envelope = try JSONDecoder().decode(TransportEnvelope.self, from: sentData)
+        guard case .message(let receivedMessage) = envelope else {
+            Issue.record("Expected .message envelope")
+            return
+        }
         #expect(receivedMessage.id == sentMessage.id)
 
         let crypto = MessageCrypto()
@@ -131,8 +141,8 @@ struct IntegrationTests {
             nonce: Data([7, 8, 9])
         )
 
-        // Message addressed to us
-        let myMessage = Message(
+        // Message addressed to us (unused — relay test only checks otherMessage)
+        _ = Message(
             senderPublicKey: Data([10, 11, 12]),
             recipientPublicKey: myPubKey,
             encryptedPayload: Data([13, 14, 15]),
@@ -151,6 +161,97 @@ struct IntegrationTests {
         )
         #expect(relayedMessages.count == 1)
         #expect(relayedMessages[0].id == otherMessage.id)
+    }
+
+    @Test("Delivery receipt sent automatically when message received")
+    func deliveryReceiptSent() async throws {
+        let identity = IdentityManager()
+        let router = MessageRouter(identity: identity)
+
+        let transport = MockTransport(kind: .loom)
+        await router.addTransport(transport)
+
+        let myPubKey = try await identity.publicKeyData()
+
+        // Set up message handler
+        let receivedMessages = Collector<Message>()
+        await router.setMessageHandler { message, _ in
+            Task { await receivedMessages.append(message) }
+        }
+
+        // Start discovery to begin listening
+        await router.startAllDiscovery()
+
+        // Simulate receiving a message addressed to us
+        let incomingMessage = Message(
+            senderPublicKey: Data(repeating: 42, count: 65),
+            recipientPublicKey: myPubKey,
+            encryptedPayload: Data([1, 2, 3]),
+            nonce: Data([4, 5, 6])
+        )
+        let envelope = TransportEnvelope.message(incomingMessage)
+        let wireData = try JSONEncoder().encode(envelope)
+
+        let senderPeer = TransportPeer(
+            id: "loom-sender",
+            displayName: "Sender",
+            transport: .loom,
+            transportIdentifier: "sender-id"
+        )
+        await transport.addPeer(senderPeer)
+        await router.refreshPeers()
+
+        await transport.simulateIncoming(wireData, from: senderPeer)
+
+        // Give async processing time to complete
+        try await Task.sleep(for: .milliseconds(100))
+
+        // The router should have sent a delivery receipt back
+        let sent = await transport.getSentMessages()
+        // At least one sent message should be a receipt
+        let hasReceipt = sent.contains { data, _ in
+            if let env = try? JSONDecoder().decode(TransportEnvelope.self, from: data),
+               case .receipt(let receipt) = env {
+                return receipt.messageId == incomingMessage.id && receipt.status == .delivered
+            }
+            return false
+        }
+        #expect(hasReceipt, "A delivery receipt should be sent back")
+    }
+
+    @Test("Receipt handler receives delivery receipts")
+    func receiptHandlerCalled() async throws {
+        let identity = IdentityManager()
+        let router = MessageRouter(identity: identity)
+
+        let transport = MockTransport(kind: .loom)
+        await router.addTransport(transport)
+
+        let receivedReceipts = Collector<DeliveryReceipt>()
+        await router.setReceiptHandler { receipt in
+            Task { await receivedReceipts.append(receipt) }
+        }
+
+        await router.startAllDiscovery()
+
+        // Simulate receiving a receipt
+        let receipt = DeliveryReceipt(messageId: UUID(), status: .delivered)
+        let envelope = TransportEnvelope.receipt(receipt)
+        let wireData = try JSONEncoder().encode(envelope)
+
+        let peer = TransportPeer(
+            id: "loom-peer",
+            displayName: "Peer",
+            transport: .loom,
+            transportIdentifier: "peer-id"
+        )
+        await transport.simulateIncoming(wireData, from: peer)
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        let receipts = await receivedReceipts.items
+        #expect(receipts.count == 1)
+        #expect(receipts[0].messageId == receipt.messageId)
     }
 
     @Test("Loom preferred over Meshtastic when both available")

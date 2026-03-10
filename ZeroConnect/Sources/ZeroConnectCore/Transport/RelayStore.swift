@@ -15,8 +15,22 @@ public actor RelayStore {
     private var relayMessages: [RelayMessage] = []
     private let maxRelayMessages = 100
     private let maxAge: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+    private let store: MessageStore?
 
-    public init() {}
+    public init(store: MessageStore? = nil) {
+        self.store = store
+    }
+
+    /// Load persisted relay messages from disk.
+    public func loadFromDisk() async {
+        guard let store else { return }
+        do {
+            relayMessages = try await store.loadRelayMessages()
+            pruneExpired()
+        } catch {
+            print("[RelayStore] Failed to load: \(error)")
+        }
+    }
 
     /// Store a message for relay.
     public func store(_ message: Message) {
@@ -31,6 +45,7 @@ public actor RelayStore {
         }
 
         relayMessages.append(RelayMessage(message: message))
+        persistToDisk()
     }
 
     /// Get all relay messages intended for a specific public key.
@@ -43,12 +58,17 @@ public actor RelayStore {
     /// Remove messages that have been successfully delivered.
     public func markDelivered(messageIds: [UUID]) {
         relayMessages.removeAll { messageIds.contains($0.message.id) }
+        persistToDisk()
     }
 
     /// Remove expired messages.
     public func pruneExpired() {
         let cutoff = Date().addingTimeInterval(-maxAge)
+        let before = relayMessages.count
         relayMessages.removeAll { $0.receivedAt < cutoff }
+        if relayMessages.count != before {
+            persistToDisk()
+        }
     }
 
     /// All messages currently held for relay.
@@ -58,6 +78,20 @@ public actor RelayStore {
 
     public var count: Int {
         relayMessages.count
+    }
+
+    // MARK: - Private
+
+    private func persistToDisk() {
+        guard let store else { return }
+        let snapshot = relayMessages
+        Task {
+            do {
+                try await store.saveRelayMessages(snapshot)
+            } catch {
+                print("[RelayStore] Failed to persist: \(error)")
+            }
+        }
     }
 }
 

@@ -6,11 +6,16 @@ import Foundation
 /// The router maintains all registered transports, discovers peers across
 /// all of them, and selects the highest-priority transport that can reach
 /// a given recipient. The user never thinks about transport.
+///
+/// Wire protocol:
+/// - Loom/Server: JSON-encoded `TransportEnvelope`
+/// - Meshtastic: `CompactMessage` binary encoding (saves ~45% vs JSON)
 public actor MessageRouter {
     private var transports: [any Transport] = []
     private let crypto: MessageCrypto
     private let identity: IdentityManager
-    public let relayStore = RelayStore()
+    public let relayStore: RelayStore
+    private let fragmentCollector = FragmentCollector()
 
     /// All peers visible across all transports, deduplicated by public key when possible.
     public private(set) var allPeers: [TransportPeer] = []
@@ -18,9 +23,10 @@ public actor MessageRouter {
     /// Whether this device should relay messages for others.
     public var relayEnabled = true
 
-    public init(identity: IdentityManager) {
+    public init(identity: IdentityManager, store: MessageStore? = nil) {
         self.identity = identity
         self.crypto = MessageCrypto()
+        self.relayStore = RelayStore(store: store)
     }
 
     /// Register a transport. Call before starting discovery.
@@ -42,9 +48,10 @@ public actor MessageRouter {
         for transport in transports {
             Task { [weak self] in
                 guard let self else { return }
+                let transportKind = await transport.kind
                 let incoming = await transport.incomingMessages()
                 for await (data, peer) in incoming {
-                    await self.handleIncomingData(data, from: peer)
+                    await self.handleIncomingData(data, from: peer, transportKind: transportKind)
                 }
             }
         }
@@ -80,16 +87,6 @@ public actor MessageRouter {
         var delivered: [UUID] = []
 
         for relay in relayMessages {
-            // Try to send to any peer — in a real implementation we'd match
-            // by public key, but for now broadcast to all peers and let them
-            // decide if it's for them
-            let messageData: Data
-            do {
-                messageData = try JSONEncoder().encode(relay.message)
-            } catch {
-                continue
-            }
-
             for peer in allPeers {
                 do {
                     var matchedTransport: (any Transport)?
@@ -100,12 +97,15 @@ public actor MessageRouter {
                         }
                     }
                     if let transport = matchedTransport {
-                        try await transport.send(messageData, to: peer)
+                        let wireData = try encodeForWire(
+                            envelope: .message(relay.message),
+                            transportKind: peer.transport
+                        )
+                        try await transport.send(wireData, to: peer)
                         delivered.append(relay.message.id)
                         break // Sent to one peer, move to next message
                     }
                 } catch {
-                    // Peer unreachable, try next
                     continue
                 }
             }
@@ -117,18 +117,10 @@ public actor MessageRouter {
     }
 
     /// Send an encrypted message to a contact using the best available transport.
-    ///
-    /// The router:
-    /// 1. Finds all transports that can reach this contact
-    /// 2. Picks the highest-priority one
-    /// 3. Serializes and sends the encrypted message
     public func send(
         _ message: Message,
         to contact: Contact
     ) async throws {
-        let messageData = try JSONEncoder().encode(message)
-
-        // Find peers that match this contact
         let reachablePeers = findPeersForContact(contact)
 
         guard let bestPeer = reachablePeers
@@ -138,7 +130,6 @@ public actor MessageRouter {
             throw RouterError.noTransportAvailable
         }
 
-        // Find the transport that owns this peer
         var matchedTransport: (any Transport)?
         for transport in transports {
             if await transport.kind == bestPeer.transport {
@@ -151,7 +142,60 @@ public actor MessageRouter {
             throw RouterError.noTransportAvailable
         }
 
-        try await transport.send(messageData, to: bestPeer)
+        let wireData = try encodeForWire(
+            envelope: .message(message),
+            transportKind: bestPeer.transport
+        )
+
+        // Fragment for bandwidth-constrained transports
+        if bestPeer.transport.usesCompactEncoding {
+            let fragments = MessageFragmenter.fragment(wireData, messageId: message.id)
+            for fragment in fragments {
+                try await transport.send(fragment, to: bestPeer)
+            }
+        } else {
+            try await transport.send(wireData, to: bestPeer)
+        }
+    }
+
+    /// Send a delivery receipt back to the sender.
+    public func sendReceipt(
+        _ receipt: DeliveryReceipt,
+        to senderPublicKey: Data
+    ) async {
+        // Find a peer we can reach that has this public key
+        // For now, broadcast the receipt — the sender will recognize their message ID
+        let wireData: Data
+        do {
+            wireData = try JSONEncoder().encode(TransportEnvelope.receipt(receipt))
+        } catch {
+            print("[MessageRouter] Failed to encode receipt: \(error)")
+            return
+        }
+
+        for peer in allPeers {
+            do {
+                var matchedTransport: (any Transport)?
+                for transport in transports {
+                    if await transport.kind == peer.transport {
+                        matchedTransport = transport
+                        break
+                    }
+                }
+                if let transport = matchedTransport {
+                    let peerWireData: Data
+                    if peer.transport.usesCompactEncoding {
+                        // Receipts are small enough for LoRa as JSON envelope
+                        peerWireData = wireData
+                    } else {
+                        peerWireData = wireData
+                    }
+                    try await transport.send(peerWireData, to: peer)
+                }
+            } catch {
+                continue
+            }
+        }
     }
 
     /// Create and send an encrypted text message to a contact.
@@ -171,8 +215,22 @@ public actor MessageRouter {
             recipientPublicKey: recipientPubKey
         )
 
+        // Use compressed keys for compact encoding when going over Meshtastic
+        let senderKeyForMessage: Data
+        let reachablePeers = findPeersForContact(contact)
+        let bestTransport = reachablePeers
+            .sorted(by: { $0.transport.priority > $1.transport.priority })
+            .first?.transport
+
+        if bestTransport?.usesCompactEncoding == true {
+            let senderPubKey = try PublicKeyUtils.decode(senderPubKeyData)
+            senderKeyForMessage = PublicKeyUtils.encode(senderPubKey, format: .compressed)
+        } else {
+            senderKeyForMessage = senderPubKeyData
+        }
+
         let message = Message(
-            senderPublicKey: senderPubKeyData,
+            senderPublicKey: senderKeyForMessage,
             recipientPublicKey: contact.publicKey,
             encryptedPayload: encrypted,
             nonce: nonce
@@ -182,41 +240,109 @@ public actor MessageRouter {
         return message
     }
 
-    // MARK: - Private
+    // MARK: - Callbacks
 
     /// Callback for incoming messages. Set by the app layer.
     public private(set) var onMessageReceived: (@Sendable (Message, TransportPeer) -> Void)?
+
+    /// Callback for incoming delivery receipts.
+    public private(set) var onReceiptReceived: (@Sendable (DeliveryReceipt) -> Void)?
 
     public func setMessageHandler(_ handler: @escaping @Sendable (Message, TransportPeer) -> Void) {
         onMessageReceived = handler
     }
 
-    private func handleIncomingData(_ data: Data, from peer: TransportPeer) async {
-        do {
-            let message = try JSONDecoder().decode(Message.self, from: data)
+    public func setReceiptHandler(_ handler: @escaping @Sendable (DeliveryReceipt) -> Void) {
+        onReceiptReceived = handler
+    }
 
-            // Check if this message is for us
-            let myPubKey = try? await identity.publicKeyData()
-            if message.recipientPublicKey == myPubKey {
-                onMessageReceived?(message, peer)
-            } else if relayEnabled {
-                // Not for us — store for relay
-                await relayStore.store(message)
+    // MARK: - Wire Encoding
+
+    /// Encode an envelope for the wire based on transport type.
+    private func encodeForWire(envelope: TransportEnvelope, transportKind: TransportKind) throws -> Data {
+        if transportKind.usesCompactEncoding {
+            // Meshtastic: use compact binary for messages, JSON for receipts
+            switch envelope {
+            case .message(let message):
+                return CompactMessage.encode(message)
+            case .receipt:
+                return try JSONEncoder().encode(envelope)
+            }
+        } else {
+            return try JSONEncoder().encode(envelope)
+        }
+    }
+
+    /// Decode incoming wire data based on the transport it came from.
+    private func decodeFromWire(_ data: Data, transportKind: TransportKind) throws -> TransportEnvelope {
+        if transportKind.usesCompactEncoding {
+            // Try compact binary first (messages), fall back to JSON (receipts/envelopes)
+            if let message = try? CompactMessage.decode(data) {
+                return .message(message)
+            }
+            return try JSONDecoder().decode(TransportEnvelope.self, from: data)
+        } else {
+            // Try envelope format first, fall back to bare Message for backwards compatibility
+            if let envelope = try? JSONDecoder().decode(TransportEnvelope.self, from: data) {
+                return envelope
+            }
+            let message = try JSONDecoder().decode(Message.self, from: data)
+            return .message(message)
+        }
+    }
+
+    // MARK: - Incoming
+
+    private func handleIncomingData(_ data: Data, from peer: TransportPeer, transportKind: TransportKind) async {
+        // Check if this is a fragment that needs reassembly
+        if transportKind.usesCompactEncoding, MessageFragmenter.isFragment(data) {
+            if let reassembled = await fragmentCollector.addFragment(data) {
+                await processDecodedData(reassembled, from: peer, transportKind: transportKind)
+            }
+            // Fragment collected but not yet complete — wait for more
+            return
+        }
+
+        await processDecodedData(data, from: peer, transportKind: transportKind)
+    }
+
+    private func processDecodedData(_ data: Data, from peer: TransportPeer, transportKind: TransportKind) async {
+        do {
+            let envelope = try decodeFromWire(data, transportKind: transportKind)
+
+            switch envelope {
+            case .message(let message):
+                await handleIncomingMessage(message, from: peer)
+            case .receipt(let receipt):
+                onReceiptReceived?(receipt)
             }
         } catch {
-            print("[MessageRouter] Failed to decode message from \(peer.displayName): \(error)")
+            print("[MessageRouter] Failed to decode from \(peer.displayName): \(error)")
+        }
+    }
+
+    private func handleIncomingMessage(_ message: Message, from peer: TransportPeer) async {
+        // Check if this message is for us
+        let myPubKey = try? await identity.publicKeyData()
+        if message.recipientPublicKey == myPubKey {
+            onMessageReceived?(message, peer)
+
+            // Send delivery receipt back
+            let receipt = DeliveryReceipt(messageId: message.id, status: .delivered)
+            await sendReceipt(receipt, to: message.senderPublicKey)
+        } else if relayEnabled {
+            // Not for us — store for relay
+            await relayStore.store(message)
         }
     }
 
     private func findPeersForContact(_ contact: Contact) -> [TransportPeer] {
         allPeers.filter { peer in
-            // Match by Meshtastic node ID
             if let nodeId = contact.meshtasticNodeId,
                peer.transport == .meshtastic,
                peer.transportIdentifier == String(nodeId) {
                 return true
             }
-            // Match by Loom device ID
             if let loomId = contact.loomDeviceId,
                peer.transport == .loom,
                peer.transportIdentifier == loomId.uuidString {
