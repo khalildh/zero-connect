@@ -10,9 +10,13 @@ public actor MessageRouter {
     private var transports: [any Transport] = []
     private let crypto: MessageCrypto
     private let identity: IdentityManager
+    public let relayStore = RelayStore()
 
     /// All peers visible across all transports, deduplicated by public key when possible.
     public private(set) var allPeers: [TransportPeer] = []
+
+    /// Whether this device should relay messages for others.
+    public var relayEnabled = true
 
     public init(identity: IdentityManager) {
         self.identity = identity
@@ -140,10 +144,18 @@ public actor MessageRouter {
         onMessageReceived = handler
     }
 
-    private func handleIncomingData(_ data: Data, from peer: TransportPeer) {
+    private func handleIncomingData(_ data: Data, from peer: TransportPeer) async {
         do {
             let message = try JSONDecoder().decode(Message.self, from: data)
-            onMessageReceived?(message, peer)
+
+            // Check if this message is for us
+            let myPubKey = try? await identity.publicKeyData()
+            if message.recipientPublicKey == myPubKey {
+                onMessageReceived?(message, peer)
+            } else if relayEnabled {
+                // Not for us — store for relay
+                await relayStore.store(message)
+            }
         } catch {
             print("[MessageRouter] Failed to decode message from \(peer.displayName): \(error)")
         }
