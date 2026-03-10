@@ -153,7 +153,7 @@ final class AppState: ObservableObject {
             do {
                 let privateKey = try await identity.privateKey()
                 let senderPubKey = try P256.KeyAgreement.PublicKey(
-                    compactRepresentation: message.senderPublicKey
+                    x963Representation: message.senderPublicKey
                 )
                 let crypto = MessageCrypto()
                 let content = try crypto.decrypt(

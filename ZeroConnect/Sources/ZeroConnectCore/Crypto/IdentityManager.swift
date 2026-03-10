@@ -28,10 +28,10 @@ public actor IdentityManager {
         return newKey
     }
 
-    /// Returns the device's public key as raw bytes.
+    /// Returns the device's public key as raw bytes (x963 uncompressed format).
     public func publicKeyData() throws -> Data {
         let key = try privateKey()
-        return key.publicKey.compactRepresentation ?? Data(key.publicKey.rawRepresentation)
+        return key.publicKey.x963Representation
     }
 
     /// Returns the public key as a hex string for display / QR codes.
@@ -74,7 +74,21 @@ public actor IdentityManager {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemAdd(query as CFDictionary, nil)
+
+        if status == errSecDuplicateItem {
+            // Key already exists — update it
+            let searchQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.keychainService,
+                kSecAttrAccount as String: Self.keychainAccount,
+            ]
+            let updateAttributes: [String: Any] = [
+                kSecValueData as String: data,
+            ]
+            status = SecItemUpdate(searchQuery as CFDictionary, updateAttributes as CFDictionary)
+        }
+
         guard status == errSecSuccess else {
             throw IdentityError.keychainError(status)
         }

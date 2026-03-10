@@ -124,7 +124,7 @@ struct QRCodeIdentityTests {
     @Test("Encode and decode round-trip")
     func encodeDecodeRoundTrip() throws {
         let key = P256.KeyAgreement.PrivateKey()
-        let pubKeyData = key.publicKey.compactRepresentation ?? Data(key.publicKey.rawRepresentation)
+        let pubKeyData = key.publicKey.x963Representation
 
         let identity = QRCodeIdentity(publicKey: pubKeyData, displayName: "Ibrahim")
         let encoded = try identity.encodeToString()
@@ -145,7 +145,7 @@ struct QRCodeIdentityTests {
     @Test("toContact creates correct contact")
     func toContactCreation() throws {
         let key = P256.KeyAgreement.PrivateKey()
-        let pubKeyData = key.publicKey.compactRepresentation ?? Data(key.publicKey.rawRepresentation)
+        let pubKeyData = key.publicKey.x963Representation
 
         let identity = QRCodeIdentity(publicKey: pubKeyData, displayName: "Fatmata")
         let contact = identity.toContact()
