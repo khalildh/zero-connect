@@ -1,6 +1,6 @@
 # Zero Connect — Design Document
 
-> A delay-tolerant, transport-agnostic, encrypted messaging system where every phone is simultaneously a client, relay, mix node, and server. There is no other infrastructure. The network is the people.
+> An offline-first, encrypted messaging app that lets people send messages without internet or phone credits. Messages move between nearby phones and arrive when they can.
 
 ---
 
@@ -8,237 +8,136 @@
 
 | Version | Date | Summary |
 |---------|------|---------|
-| 0.1.0 | 2026-03-10 | Initial design document. Architecture, transport stack, threat model, and roadmap. |
-| 0.2.0 | 2026-03-10 | Fully distributed P2P architecture. No central server — every device is a server. DHT replaces server for message storage/routing. DHT-as-mixnet. Local DHT mutation replaces constant cover traffic transmission. Scuttlebutt-inspired append-only logs. Message fragmentation across nodes. Regulatory, governance, and sustainability considerations. Android-first reality for Kabala (Tecno/Infinix devices). Language/literacy requirements (Krio, Kuranko). |
+| 0.1.0 | 2026-03-10 | Initial design document. |
+| 0.2.0 | 2026-03-10 | Fully distributed P2P architecture with DHT, mixnet properties, message fragmentation. |
+| 0.3.0 | 2026-03-10 | Refocused on core product: offline messaging that works. Moved privacy research, DHT, mixnet, and fragmentation to FUTURE-RESEARCH.md. Tightened roadmap. Android elevated to Stage 2. |
 
 ---
 
 ## 1. Problem
 
-3.7 billion people lack reliable internet access. Existing messaging apps fail completely without connectivity. The alternatives — Meshtastic, Briar, Bridgefy — each solve part of the problem but none assemble the full stack: consumer UX, offline-first delivery, transport agnosticism, and real encryption.
+People in Kabala, Sierra Leone can't reliably message each other. Internet is expensive, unreliable, or absent. Phone credits cost money. When the network is down — which is often — communication stops entirely.
 
-Bridgefy failed on security. Serval failed on distribution. FireChat failed on sustainability. Meshtastic requires extra hardware and technical knowledge. Signal requires internet.
+Existing tools don't solve this:
+- **WhatsApp/Signal** — require internet. Useless without data.
+- **SMS** — costs money per message. No encryption.
+- **Meshtastic** — requires extra hardware and technical knowledge.
+- **Briar** — technically capable but ugly, complex, Android-only, and unknown.
+- **Bridgefy/FireChat** — dead or broken.
 
-Nothing works across the full connectivity spectrum — from zero infrastructure to full cellular — in a single coherent experience.
+The gap: a simple messaging app that works without internet, without phone credits, on the cheap phones people already have.
 
 ## 2. Core Insight
 
-Delay tolerance and mixnet privacy are the same property. The random delays inherent in offline mesh delivery are exactly the mechanism that defeats traffic correlation by a global passive adversary. The architecture that makes messaging work without internet also makes it resistant to surveillance — not as a tradeoff, but as a structural bonus.
+Messages don't need the internet to travel between phones. Bluetooth, Wi-Fi Direct, and LoRa radio can move data between nearby devices with no infrastructure at all. If a message can't reach its destination directly, it can wait — stored on the sender's phone or on relay devices — and arrive later when a path opens up.
+
+The user doesn't need to know how the message got there. They just need to know it arrived.
 
 ## 3. Target Users
 
 **Primary — Kabala, Sierra Leone:**
-People in a community with strong social bonds, high mobile penetration, expensive/unreliable data, and no alternative for offline coordination. Distribution through existing trust networks and family connections. Real relationships map directly onto the technical network. Dominant devices: Tecno Spark, Infinix Hot, Itel — $50-80 Android phones. Languages: Krio (lingua franca), Kuranko, Mandinka, English.
+Family and community members who want to message each other without paying for data or phone credits. Strong social bonds mean trust is already established — people know each other. Dominant devices: Tecno Spark, Infinix Hot, Itel — $50-80 Android phones. Languages: Krio (lingua franca), Kuranko, Mandinka, English.
 
 **Secondary — Burning Man / festival communities:**
-Tech-savvy, motivated, willing to carry extra hardware (LoRa nodes). Dense, time-limited environment ideal for proving transport agnosticism. Revenue from this segment cross-subsidizes infrastructure costs for primary users.
+Tech-savvy, motivated. Dense environment with no cell service. Willing to carry LoRa hardware. Good testing ground and potential revenue source.
 
 **Tertiary — privacy/activist/humanitarian communities:**
-Journalists, NGOs, disaster response. High sensitivity to metadata surveillance. Value the mixnet properties. Provide credibility and security audit attention.
+Journalists, NGOs, disaster response. Different value proposition (metadata resistance) addressed in [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md).
 
-## 4. Architecture Overview
+## 4. How It Works
 
-### No Central Server
+### The Simple Version
 
-Every phone is simultaneously a client, a relay, a mix node, and a server. There is no central infrastructure. The network cannot be shut down without shutting down every device — the same property that makes BitTorrent essentially impossible to kill.
+1. Two people meet and scan each other's QR codes (adds each other as contacts)
+2. One sends a message
+3. If the other person's phone is nearby (Bluetooth/Wi-Fi range), the message arrives immediately
+4. If not, the message waits on the sender's phone
+5. When someone who knows both people passes near the sender, their phone silently picks up the message
+6. When that person later passes near the recipient, their phone delivers it
+7. If anyone in the chain gets internet, the message can travel instantly via the internet instead
 
-This means:
-- Nothing to seize or subpoena
-- No single point of failure
-- No server costs or maintenance
-- No company infrastructure to attack
-- No target for adversaries
-- The community owns the network
+Messages are encrypted end-to-end. Relay phones carry opaque blobs they can't read.
 
-### Protocol Stack
+### Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
 │                   Application                    │
-│       (Messages, Contacts, Groups, UI)           │
+│         (Messages, Contacts, UI)                 │
 ├─────────────────────────────────────────────────┤
 │              Encryption Layer                    │
-│    (Double ratchet, keypair identity, groups)     │
+│         (End-to-end encrypted payloads)          │
 ├─────────────────────────────────────────────────┤
-│              Routing & Storage                   │
-│  DHT (Kademlia) + Epidemic routing + Mixnet      │
-├──────────┬──────────┬───────────┬───────────────┤
-│  Loom    │Meshtastic│    SMS    │  Bluetooth    │
-│ (Wi-Fi/  │  (LoRa   │ (Gateway  │  (Nearby      │
-│  AWDL)   │ via BLE) │  bridge)  │  Connections) │
-└──────────┴──────────┴───────────┴───────────────┘
+│            Sync & Store-Forward                  │
+│  (Append-only logs, anti-entropy replication)    │
+├──────────┬──────────┬───────────────────────────┤
+│  Loom    │Meshtastic│  Internet (when available) │
+│ (Wi-Fi/  │  (LoRa   │                            │
+│  AWDL)   │ via BLE) │                            │
+└──────────┴──────────┴───────────────────────────┘
 ```
 
-### Transport Hierarchy (best to worst bandwidth)
+### Transports
 
-| Priority | Transport | Range | Bandwidth | Hardware | Internet Required |
-|----------|-----------|-------|-----------|----------|-------------------|
-| 1 | Cellular/Internet | Global | High | Phone | Yes |
-| 2 | Loom over Wi-Fi | ~100m (same network) | High | Phone | No |
-| 3 | Loom over AWDL | ~30-100m (peer-to-peer) | Medium | Apple device | No |
-| 4 | Bluetooth mesh | ~30m | Medium | Phone | No |
-| 5 | SMS Gateway | Cellular range | Low | Phone | Partial |
-| 6 | Meshtastic LoRa | 1-10km+ | Very low (~250 B/s) | LoRa node + Phone | No |
-| 7 | Store & carry forward | Human movement | Varies | Phone | No |
+| Transport | Range | Bandwidth | Hardware | Internet Required |
+|-----------|-------|-----------|----------|-------------------|
+| Internet | Global | High | Phone | Yes |
+| Loom over Wi-Fi | ~100m (same network) | High | Phone | No |
+| Loom over AWDL | ~30-100m (peer-to-peer) | Medium | Apple device | No |
+| Meshtastic LoRa | 1-10km+ | Very low (~250 B/s) | LoRa node + Phone | No |
+| Store & carry forward | Human movement | Varies | Phone | No |
 
-The message router selects the best available transport automatically. Messages are opaque encrypted blobs — transports carry them without knowledge of content. If a higher-priority transport becomes available mid-delivery, the system upgrades transparently.
+The app selects the best available transport automatically. The user never thinks about it.
 
-## 5. Distributed Storage — The DHT
+### Message Delivery & Sync
 
-Messages are stored and routed through a **Kademlia DHT** — the same algorithm used by BitTorrent and Ethereum, proven at internet scale for 20+ years.
+Inspired by [Secure Scuttlebutt](https://scuttlebutt.nz/):
 
-### How Messages Get Delivered
+- Each user has an **append-only log** of their messages, cryptographically signed
+- When two devices meet, they compare logs and exchange missing entries (anti-entropy sync)
+- No complex routing needed — devices simply share what they have when they're nearby
+- Messages are deduplicated by ID so multiple delivery paths don't create duplicates
+- Messages expire after a configurable period to manage storage on cheap phones
 
-**Locally (offline)** — Epidemic routing:
-- Device receives a message and keeps a copy temporarily
-- When two devices meet (Bluetooth, AWDL, LoRa), they compare what messages each holds
-- Missing messages are exchanged automatically
-- Messages eventually reach every nearby device
-- Delete after delivery confirmation or expiry
-- No routing algorithm needed — simple, robust, works completely offline
+### Delivery States
 
-**Globally (when any node has internet)** — DHT:
-- Messages are pushed into the DHT where recipients can find them
-- Any device with internet becomes a bridge — its phone flushes the message into the DHT
-- Recipient queries the DHT when they get connectivity
-- No central server — the DHT is distributed across all internet-connected nodes
+Users need to understand what happened to their message:
 
-**The transition is seamless.** A message might travel via Bluetooth hop-by-hop through a village, get picked up by someone walking to the market who has cell signal, get flushed into the DHT, and arrive at the recipient's phone within minutes. Nobody orchestrated this — it emerged from the architecture.
+| State | Meaning |
+|-------|---------|
+| Queued | Message is on your phone, waiting for a path |
+| Carried | A relay device has picked it up |
+| Delivered | Recipient's device has received it |
+| Read | Recipient has opened it |
 
-### Message Fragmentation
+These states update as information flows back through the network. In offline conditions, "Queued" may persist for hours — the UI must make this feel normal, not broken.
 
-Messages are split into fragments and distributed across the DHT:
-- No single device holds a complete message
-- Seizing one phone reveals nothing
-- The message only reconstitutes when the recipient queries the DHT for all fragments
-- Individual fragments are encrypted and meaningless without the recipient's private key
-- Similar to how IPFS handles content-addressed storage
-
-### Storage Economics
-
-Every device contributes storage proportional to what it consumes. The DHT naturally distributes load across nodes. In Kabala, a message from Maria to her sister might be fragmented across twenty devices in the community, each holding an encrypted piece that means nothing alone. No single device becomes a bottleneck.
-
-**Storage tiers:**
-- Volunteer storage nodes — a Raspberry Pi, an old Android phone plugged in, a community device
-- Reciprocal storage — you store for me, I store for you
-- Probabilistic storage — every device stores fragments temporarily with random duration; with enough participants, at least one device still has it when the recipient comes online
-
-### Precedent: Secure Scuttlebutt
-
-The closest existing system. Fully P2P, works offline, syncs when devices meet, no central server. Used by sailing and off-grid communities. Study deeply before writing code.
-
-Key Scuttlebutt concept we adopt: **append-only logs**. Each user has a personal log of messages, cryptographically signed. Other devices store copies of logs they're interested in. When two devices meet, they compare and sync missing entries. This is a CRDT (Conflict-free Replicated Data Type) — proven technology for distributed systems that sync without coordination.
-
-Scuttlebutt's weaknesses we address: no transport hierarchy, no mixnet properties, no LoRa/SMS fallback, technical UX.
-
-## 6. The DHT as Mixnet
-
-### Every Node is a Mix Node
-
-Each device in the network acts as a mix node by default:
-
-1. Receives messages from multiple sources
-2. Holds them for a random interval (exponential distribution)
-3. Reorders the queue
-4. Forwards through the best available transport
-
-There is no distinguished mixnet infrastructure. No list of mix nodes to block or monitor. The network is the users — you can't block the mixnet without blocking every phone. This is a **fully distributed peer-to-peer mixnet**, considered theoretically stronger than centralized mixnet architectures (Tor, Nym).
-
-### Kademlia Queries as Natural Onion Routing
-
-DHT queries are routed through multiple intermediate nodes before reaching their destination. Each intermediate node only knows its neighbors, not the full path. This is structurally similar to onion routing. Adding random delays at each hop completes the mixnet property. **The DHT is the mixnet.** Same infrastructure, same traffic, same operations.
-
-### Cover Traffic via Local DHT Mutation (Not Constant Transmission)
-
-Traditional cover traffic constantly transmits fake messages — expensive on battery and bandwidth. We take a fundamentally different approach:
-
-**The insight:** You don't need to generate fake traffic constantly. You just need the DHT state on your device to be constantly shifting so that when you do transmit, the snapshot looks different every time. An observer can't distinguish a real message transmission from a routine DHT update.
-
-**While plugged in and charging (zero transmission cost):**
-- Re-encrypt stored fragments with fresh ephemeral keys
-- Rotate which fragments the device is responsible for in DHT keyspace
-- Compute new Kademlia routing table entries
-- Pre-compute encrypted message fragments ready to send
-- Refresh expiry timestamps on stored entries
-
-**None of this touches the radio.** All of it means the next sync looks completely fresh.
-
-**When transmission happens (syncing with a neighbor):**
-- The transmitted DHT state looks completely different from the last sync
-- Even if no real messages were sent
-- Real messages are indistinguishable from routine state updates
-
-**The analogy:** A card dealer constantly shuffling the deck between hands. The shuffle happens silently on the table. When cards are dealt, the observer sees a fresh arrangement with no relationship to the previous hand. The shuffling cost is near-zero. The dealing reveals nothing.
-
-**Battery-aware tuning:**
-| Device State | Local Mutation | Transmission |
-|-------------|---------------|--------------|
-| Plugged in, charging | Maximum — constant reshuffling, re-encryption, pre-computation | Normal sync schedule |
-| Good battery | Moderate reshuffling | Normal sync |
-| Low battery | Minimal reshuffling | Sync only when necessary |
-| Critical battery | None | Send/receive real messages only |
-
-**For Kabala specifically:** People charge their phones when they can — overnight at home, at charging stations, at the market. Those charging moments become the network's privacy maintenance windows. The community's phones collectively reshape the DHT while charging, so daytime transmission reveals nothing about who is communicating.
-
-### What a GPA Sees
-
-A global passive adversary watching every transport simultaneously sees:
-- Constant Bluetooth activity between nearby devices
-- Constant DHT queries on the internet (when connected)
-- Periodic LoRa transmissions across the mesh
-- Every sync contains a fresh DHT state unrelated to the previous one
-- No timing correlation possible — delays are random
-- No social graph inferable — all traffic looks like DHT maintenance
-- No way to distinguish real messages from state updates
-
-This is stronger than traditional cover traffic, which can theoretically be statistically separated from real traffic. A constantly mutating DHT state produces **no signal at all**.
-
-## 7. Encryption & Identity
+## 5. Encryption & Identity
 
 ### Design Principle
-No blockchain. No phone numbers. Simple keypair cryptography with QR code exchange. The identity system must work entirely offline after initial key generation.
+No phone numbers. No accounts. No servers. Simple keypair cryptography with QR code exchange.
 
-### Key Architecture
+### How It Works
 
-- **Identity key**: P-256 keypair generated on device at first launch
-- **Key exchange**: In-person QR code scan (contains public key) — maps perfectly onto how trust is already established in communities like Kabala
-- **Message encryption**: Double ratchet protocol (Signal protocol)
-  - Forward secrecy: compromise of one key doesn't expose past/future messages
-  - Every message uses a fresh derived key
-  - Works entirely on-device with zero network calls
-- **Key backup**: Encrypted keystore backed up to iCloud/Google Drive, or seed phrase
-- **Group keys**: Group has its own keypair; group private key encrypted to each member's public key
+- **Identity**: Device generates a keypair on first launch. This is your identity — no signup, no server.
+- **Adding contacts**: Scan someone's QR code in person. The QR contains their public key. This maps onto how trust already works in communities like Kabala — face to face.
+- **Message encryption**: Each message is encrypted to the recipient's public key. Relay devices carry opaque blobs they cannot read.
+- **Key backup**: Encrypted keystore backed up to iCloud/Google Drive, or written-down seed phrase.
 
-### Cold Start Solution
+### Security Properties
 
-Two people who have never been near each other and have no internet — how do they find each other? They meet in person and scan QR codes. This is how people in Kabala already establish trust — face to face. The technology maps onto the existing social practice. After that first exchange, the network handles everything.
+| Threat | Status | Notes |
+|--------|--------|-------|
+| Content interception | Strong | End-to-end encryption; relay nodes can't read messages |
+| Casual surveillance | Strong | Most traffic stays local and never touches the internet |
+| Phone theft/seizure | Partial | Message expiry helps; endpoint compromise is always hard |
+| Metadata analysis | Partial | Reduced by local transport; not formally proven. See [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md) |
 
-### Device Compromise Mitigations
+**Use a mature, reviewed encryption library.** Do not ship custom cryptographic implementations without external review.
 
-- **Message expiry** — old messages delete automatically
-- **Key deletion after decryption** — once read, decryption key is destroyed
-- **Forward secrecy** — old keys can't decrypt new messages
-- **Panic wipe** — hidden gesture wipes all keys instantly
+## 6. Technology Stack
 
-### What This Defeats
-
-| Threat | Protected? | How |
-|--------|-----------|-----|
-| Content interception | Yes | End-to-end encryption |
-| Casual surveillance | Yes | Offline transports never touch monitored infrastructure |
-| Basic network monitoring | Yes | Mesh traffic is opaque encrypted blobs |
-| Metadata/traffic analysis | Yes | DHT mutation + random delays + transport diversity |
-| Phone seizure | Partially | Message expiry, key deletion, panic wipe |
-| Message reconstruction from relay nodes | Yes | Fragmentation — no single device holds a complete message |
-| Global passive adversary | Structurally resistant | Offline legs invisible; DHT mutation on online legs; no signal to correlate |
-
-### What is NOT in v1
-- Threshold encryption (Seal/Sui) — revisit after core product is proven
-- On-chain identity — unnecessary complexity for the primary use case
-
-## 8. Technology Stack
-
-### v0.1 — iPhone Proof of Concept
+### Stage 1 — iPhone Proof of Concept
 
 | Component | Technology | Source |
 |-----------|-----------|--------|
@@ -247,16 +146,16 @@ Two people who have never been near each other and have no internet — how do t
 | Protobuf | MeshtasticProtobufs SPM package | meshtastic/Meshtastic-Apple |
 | Encryption | CryptoKit (P-256, HKDF, ChaCha20-Poly1305) | Apple platform |
 | UI | SwiftUI | Apple platform |
-| Persistence | SwiftData or Core Data | Apple platform |
+| Persistence | SwiftData | Apple platform |
 
 ### Meshtastic BLE Integration
 
-No standalone Swift SDK exists. We build a lean `MeshtasticTransport` that:
+No standalone Swift SDK exists. We build a lean `MeshtasticTransport`:
 
 - Scans for Meshtastic service `6BA1B218-15A8-461F-9FA8-5DCAE273EAFD`
 - Discovers 4 characteristics: TORADIO (write), FROMRADIO (read), FROMNUM (notify), LOGRADIO (logs)
 - Sends `ToRadio` protobuf messages, receives `FromRadio` responses
-- Wraps CoreBluetooth in async/await actors (following patterns from Meshtastic-Apple)
+- Wraps CoreBluetooth in async/await actors
 - Handles connection lifecycle, reconnection, and RSSI tracking
 
 ### Loom Integration
@@ -266,149 +165,167 @@ Loom provides the local/nearby transport as a Swift Package:
 - `LoomNode` for advertising and connecting
 - `LoomAuthenticatedSession` for multiplexed encrypted streams
 - `LoomDiscovery` for Bonjour peer discovery
-- `LoomIdentityManager` for P-256 keys (can share with our identity layer)
 - Peer-to-peer via `includePeerToPeer = true` (AWDL, no router)
 - iOS 17.4+, Swift 6.2
 
 ### Peer Identity Map
 
-Links identities across transports:
-
 ```
 LoomPeer (P-256 public key, device ID)
     ↔ Meshtastic Node (!hex node ID)
-    ↔ DHT address (Kademlia key)
     ↔ User-facing identity ("Sarah")
 ```
 
-Pairing established when a user is visible on both networks simultaneously, or manually via QR code that contains all identity material.
+Pairing established when a user is visible on both networks simultaneously, or via QR code containing all identity material.
 
-### Android Reality (v0.5+)
+### Stage 2 — Android
 
-Kabala runs on Android. The $50-80 devices that dominate Sierra Leone (Tecno, Infinix, Itel) have:
+This is where the primary users are. Kabala runs on Android.
+
+The $50-80 devices that dominate Sierra Leone (Tecno, Infinix, Itel) have:
 - Older Android versions with inconsistent Bluetooth implementations
-- Aggressive battery optimization that kills background processes
-- Limited RAM causing apps to be killed frequently
-- Slower processors affecting cryptographic operations
+- Aggressive battery optimization that kills background processes (especially Samsung, Xiaomi, Huawei OEM layers)
+- Limited RAM — apps get killed frequently
+- Slower processors affecting crypto operations
 
-Google's Nearby Connections API replaces Loom on Android. Same protocol, different platform transport. **First real test must be on a Tecno Spark or Infinix Hot** — not a flagship device.
+Google's Nearby Connections API replaces Loom on Android. Same protocol, different platform transport.
 
-## 9. Roadmap
+**The first real field test must be on a Tecno Spark or Infinix Hot — not a flagship device.** If it works on those, everything else is easy.
 
-### v0.1 — Proof of Concept (iPhone)
+Key Android-specific challenges:
+- Background Bluetooth/Wi-Fi Direct reliability across OEM variants
+- Battery impact must be near-zero or users will uninstall
+- App size and storage footprint on devices with 16-32GB total storage
+- Thermals — sustained background crypto on low-end chipsets
+
+## 7. Roadmap
+
+### Stage 1 — Nearby Encrypted Messaging (iPhone PoC)
+
+Prove that two phones can exchange encrypted messages without internet.
+
 - [ ] Xcode project with Loom + MeshtasticProtobufs dependencies
 - [ ] `MeshtasticTransport`: BLE scan, connect, send/receive protobufs
 - [ ] `LoomTransport`: discover peers, open sessions, send/receive data
 - [ ] Unified `Message` type that travels over either transport
 - [ ] `MessageRouter` that picks the best available transport
-- [ ] Basic SwiftUI: peer list, message thread, QR code exchange
-- [ ] P-256 keypair generation and simple encrypted payloads
-- [ ] Test between 2 iPhones with a Meshtastic node
+- [ ] On-device keypair generation
+- [ ] QR code contact exchange
+- [ ] Basic encrypted message send/receive
+- [ ] Basic SwiftUI: contact list, message thread
+- [ ] Test between 2 iPhones + a Meshtastic node
 
-### v0.2 — Distributed Storage & Encryption
-- [ ] Kademlia DHT implementation (or integrate existing Swift DHT library)
-- [ ] Append-only message logs (Scuttlebutt-inspired CRDT)
-- [ ] Epidemic routing for local mesh delivery
-- [ ] Message fragmentation across DHT nodes
-- [ ] Double ratchet implementation (or integrate libsignal)
-- [ ] Store-and-carry-forward: hold undelivered messages, relay on proximity
-- [ ] Message persistence (SwiftData)
-- [ ] Group messaging (shared group key)
+**Success criteria:** Two iPhones can exchange encrypted messages over Loom (nearby Wi-Fi/AWDL) and over Meshtastic (LoRa via BLE), with automatic transport selection.
 
-### v0.3 — Mixnet Properties
-- [ ] Random forwarding delays (configurable exponential distribution)
-- [ ] Message reordering at each hop
-- [ ] Local DHT mutation while charging (cover traffic without transmission)
-- [ ] DHT state reshuffling — re-encryption, key rotation, fragment redistribution
+### Stage 2 — Store-Forward & Android
 
-### v0.4 — SMS Bridge
-- [ ] SMS gateway integration (Twilio or similar)
-- [ ] Encrypted message payloads over SMS
-- [ ] Gateway phone concept: one device bridges SMS ↔ mesh for a community
+Make messages survive disconnection. Get onto the phones people actually use.
 
-### v0.5 — Android
-- [ ] Android app using Google Nearby Connections API (replaces Loom)
-- [ ] Shared encrypted message format across platforms
-- [ ] Cross-platform testing (iPhone ↔ Android via DHT + Meshtastic)
-- [ ] Testing on Tecno Spark / Infinix Hot devices
-- [ ] Battery optimization for aggressive Android OEMs (Samsung, Xiaomi, Huawei)
+- [ ] Append-only message logs with local persistence
+- [ ] Anti-entropy sync — devices exchange missing messages on reconnect
+- [ ] Store-and-carry-forward: relay devices hold and pass messages
+- [ ] Clear delivery state UI (queued → carried → delivered → read)
+- [ ] Message expiry and storage management
+- [ ] Android app using Google Nearby Connections API
+- [ ] Testing on Tecno Spark / Infinix Hot
+- [ ] Battery optimization for aggressive Android OEMs
 
-### v0.6 — Kabala Field Research
+**Success criteria:** A message sent when the recipient is out of range arrives later — via relay or reconnection — on a cheap Android phone, with acceptable battery impact.
+
+### Stage 3 — Kabala Field Testing
+
+Test with real people in the real environment.
+
 - [ ] Visit Kabala — observe how people actually communicate today
 - [ ] Identify the specific painful communication gap to solve first
+- [ ] Deploy to a small group (target: 30-50 people in one neighborhood)
 - [ ] UX testing with community members
 - [ ] Language localization (Krio, Kuranko)
-- [ ] UI must be learnable by watching someone else use it for 60 seconds
+- [ ] Measure: delivery latency, battery impact, message loss rate, user comprehension
+- [ ] Iterate based on what breaks and what people actually need
 
-### v1.0 — Kabala Pilot
-- [ ] Field deployment in Kabala, Sierra Leone
-- [ ] UX iteration based on real usage on real devices
-- [ ] Community storage nodes deployed (old phones, Raspberry Pi)
-- [ ] Message delivery reliability metrics
-- [ ] Security audit by external reviewer
+**Success criteria:** People in Kabala use it to communicate something they couldn't communicate before, and keep using it.
 
-### Future Considerations (post v1.0)
-- Threshold encryption (Seal/Sui) for trustless identity
+### Future Stages
+
+See [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md) for:
+- Distributed storage (DHT / Kademlia)
+- Privacy and metadata resistance (mixnet properties, cover traffic)
+- Message fragmentation
+- SMS gateway bridge
 - USSD bridge for feature phones
-- Ultrasonic audio data transfer
-- NFC tap-to-exchange message bundles
-- Vehicle/movement-based relay optimization
-- Burning Man deployment and cross-subsidization model
-- IR blaster data transfer (budget Android phones)
-- TV white space for extended range
+- Extended transports (NFC, ultrasonic, IR, TV white space)
+- Burning Man deployment
+- Formal security analysis
 
-## 10. Open Questions
+## 8. Distribution & Adoption
 
-1. **libsignal vs custom double ratchet** — libsignal is proven but heavy and C-based. A lightweight Swift implementation is possible but risky to get wrong. Needs security review either way.
-2. **Loom identity ↔ app identity** — Loom uses P-256 in iCloud Keychain. Should we reuse Loom's identity as the app identity, or maintain separate keys?
-3. **LoRa message size constraints** — Meshtastic payloads max ~237 bytes. Encrypted messages with double ratchet headers may exceed this. Fragmentation strategy needed.
-4. **Background BLE on iOS** — CoreBluetooth background modes exist but are restricted. How reliable is passive message relay when the app isn't foregrounded?
-5. **DHT bootstrap** — In a fully P2P system, how does a brand new device find its first DHT peers? Likely needs a small set of well-known bootstrap nodes (can be community-run).
-6. **Spam without a central moderator** — rate limiting tied to identity, proof of work, web of trust for filtering. Study Scuttlebutt's approach.
-7. **Message expiry policy** — How long do relay nodes hold fragments? Too short and messages don't arrive. Too long and storage fills up on cheap phones.
+This is the hardest problem. Every technical predecessor — Briar, Serval, FireChat, Bridgefy — failed primarily on distribution, not technology.
 
-## 11. Pre-Build Checklist
+### The Cold Start Problem
+
+The app is useless with one user. It's barely useful with ten. It only becomes valuable when enough people in the same physical area have it. That's a brutal chicken-and-egg problem.
+
+### Why Kabala is Different
+
+- **Existing trust network**: The founder is from Kabala. Family connections provide the initial seed.
+- **Dense social graph**: People know each other. Word of mouth is the primary distribution channel and it works fast in tight communities.
+- **Clear pain point**: Can't message when data is down or credits run out. This is a daily frustration, not a theoretical problem.
+- **No competition**: Nobody in Kabala is using Briar or Meshtastic. The alternative is nothing.
+
+### Distribution Strategy
+
+1. **Seed through family**: Get the app on 5-10 phones within the founder's family network
+2. **Expand through use**: Each person who receives a message from the app becomes a potential user
+3. **Target a specific workflow**: Not "general messaging" but one high-frequency task (e.g., market-day coordination, family check-ins when network is down)
+4. **Community champions**: Identify 2-3 trusted, tech-comfortable people who can help others install and learn
+5. **QR exchange as social ritual**: Adding someone is a physical, in-person act — this is distribution and onboarding in one gesture
+
+### The Everyday Use Question
+
+The app must be useful even when internet is working. If people only open it during outages, they'll forget about it between outages and uninstall. The app needs a reason to be the default messaging choice — or at least a frequent secondary one — so it's already installed and running when infrastructure fails.
+
+## 9. Open Questions
+
+1. **Encryption library choice** — Use a mature, reviewed library. Do not write custom crypto. Evaluate libsignal (proven, heavy, C-based) vs lighter alternatives.
+2. **Loom identity ↔ app identity** — Loom uses P-256 in iCloud Keychain. Reuse Loom's identity as the app identity, or maintain separate keys?
+3. **LoRa message size** — Meshtastic payloads max ~237 bytes. Encrypted messages may exceed this. Need a fragmentation-at-transport-level strategy.
+4. **Background operation on iOS** — CoreBluetooth background modes are restricted. How reliable is passive relay when the app isn't foregrounded?
+5. **Background operation on Android** — OEM battery optimization may be the dominant technical challenge. Needs real testing on target devices.
+6. **What's the killer first workflow?** — "Messaging" is too broad. What specific communication task do we solve first for Kabala? Needs field research.
+7. **Relay incentives** — Why would someone's phone carry messages for others? Battery cost is real. Reciprocity ("you relay for me, I relay for you") may be enough in a tight community, but needs validation.
+
+## 10. Pre-Build Checklist
 
 ### Security
-- [ ] Find a security audit partner **before writing any cryptographic code** — reach out to Briar team, Signal Foundation, academic researchers (MIT, Stanford, UCL)
-- [ ] Open source the core protocol and apps (after initial security review)
+- [ ] Identify a security-knowledgeable advisor before writing encryption code
+- [ ] Plan to open source the core protocol and apps
 
-### Legal & Regulatory
-- [ ] Consult a lawyer who understands technology and African telecommunications law
-- [ ] Research Sierra Leone's laws around encrypted communication
-- [ ] Understand licensing requirements for operating a communication network
-- [ ] Assess regulatory implications of mixnet architecture designed to defeat surveillance
+### Research
+- [ ] Talk to people in Kabala about their actual communication pain points (before building)
+- [ ] Study Secure Scuttlebutt's replication model and failure modes
+- [ ] Study Briar's Bluetooth mesh implementation and what works/breaks
 
-### Governance
-- [ ] Consider a foundation model (Tor Project, Signal Foundation) rather than a company
-- [ ] Plan for bus factor — if the founder is unavailable, the network must keep working
-- [ ] Define: if the community's needs diverge from the vision, who wins? (The community.)
-
-### Sustainability
-- [ ] Burning Man cross-subsidization: ~70,000 attendees × reasonable fee = meaningful revenue
-- [ ] Explore: outdoor recreation, disaster preparedness, maritime communication as paying markets
-- [ ] Grant funding: GSMA Mobile for Development, Mozilla Foundation, Shuttleworth Foundation, USAID, Gates Foundation
-- [ ] Marginal cost per user is near zero (no servers) — but development needs funding
+### Devices
+- [ ] Procure target Android phones (Tecno Spark, Infinix Hot, Itel) for testing
+- [ ] Document background Bluetooth/Wi-Fi behavior on each device
 
 ### Partnerships
-- [ ] Meshtastic community — hardware expertise, existing Burning Man deployments
-- [ ] GSMA Mobile for Development — funding, telecom relationships
-- [ ] Mozilla Foundation — open source privacy technology credibility
-- [ ] Local organizations in Kabala — NGOs and civil society for distribution and trust
-- [ ] Academic partners — UCL, MIT, Stanford groups working on adjacent problems
+- [ ] Meshtastic community — hardware expertise, existing deployments
+- [ ] Local organizations in Kabala — distribution and trust
+- [ ] Academic partners — security review, potential research collaboration
 
-### Operational Security
-- [ ] Development infrastructure is a target if the tool is used by activists
-- [ ] Communications with users in sensitive contexts must be secure
-- [ ] Personal threat model for the developer
+### Sustainability
+- [ ] Grant funding: GSMA Mobile for Development, Mozilla Foundation, Shuttleworth Foundation
+- [ ] Burning Man / festival market as revenue source for cross-subsidization
+- [ ] Explore: outdoor recreation, disaster preparedness, maritime as paying markets
 
-## 12. Principles
+## 11. Principles
 
-1. **Every phone is a server.** No central infrastructure. The network is the people.
-2. **Offline is the default, not the exception.** Online is just a faster pipe.
-3. **The user never thinks about transport.** Messages just arrive.
-4. **Security is structural, not behavioral.** Privacy emerges from the design, not from users making good choices.
-5. **Start with real people.** Build for Kabala first, generalize second.
-6. **Simplest thing that works.** No blockchain until we need blockchain. No LoRa until Bluetooth isn't enough.
-7. **The community owns the network.** No company can shut it down, change the terms, monetize the data, or hand it to governments.
-8. **Learnable in 60 seconds.** If someone can't learn the app by watching another person use it, the UX has failed.
+1. **Offline is the default, not the exception.** Online is just a faster pipe.
+2. **The user never thinks about transport.** Messages just arrive.
+3. **Start with real people.** Build for Kabala first, generalize second.
+4. **Simplest thing that works.** Add complexity only when the simple version isn't enough.
+5. **Learnable in 60 seconds.** If someone can't learn the app by watching another person use it, the UX has failed.
+6. **Security should come from defaults and architecture, not from expert user behavior.**
+7. **The first version is not a censorship-proof anonymity network.** It is a reliable offline-first encrypted messenger for people with intermittent connectivity and real-world devices.
