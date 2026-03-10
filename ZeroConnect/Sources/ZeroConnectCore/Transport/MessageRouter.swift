@@ -57,7 +57,7 @@ public actor MessageRouter {
         }
     }
 
-    /// Refresh the peer list from all transports.
+    /// Refresh the peer list from all transports and attempt relay delivery.
     public func refreshPeers() async {
         var combined: [TransportPeer] = []
         for transport in transports {
@@ -65,6 +65,55 @@ public actor MessageRouter {
             combined.append(contentsOf: peers)
         }
         allPeers = combined
+
+        // Attempt to forward relay messages to newly-visible peers
+        if relayEnabled {
+            await attemptRelayDelivery()
+        }
+    }
+
+    /// Try to deliver relay messages to peers that are currently visible.
+    private func attemptRelayDelivery() async {
+        let relayMessages = await relayStore.allRelayMessages
+        guard !relayMessages.isEmpty, !allPeers.isEmpty else { return }
+
+        var delivered: [UUID] = []
+
+        for relay in relayMessages {
+            // Try to send to any peer — in a real implementation we'd match
+            // by public key, but for now broadcast to all peers and let them
+            // decide if it's for them
+            let messageData: Data
+            do {
+                messageData = try JSONEncoder().encode(relay.message)
+            } catch {
+                continue
+            }
+
+            for peer in allPeers {
+                do {
+                    var matchedTransport: (any Transport)?
+                    for transport in transports {
+                        if await transport.kind == peer.transport {
+                            matchedTransport = transport
+                            break
+                        }
+                    }
+                    if let transport = matchedTransport {
+                        try await transport.send(messageData, to: peer)
+                        delivered.append(relay.message.id)
+                        break // Sent to one peer, move to next message
+                    }
+                } catch {
+                    // Peer unreachable, try next
+                    continue
+                }
+            }
+        }
+
+        if !delivered.isEmpty {
+            await relayStore.markDelivered(messageIds: delivered)
+        }
     }
 
     /// Send an encrypted message to a contact using the best available transport.
