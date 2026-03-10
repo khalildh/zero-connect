@@ -12,6 +12,7 @@
 | 0.2.0 | 2026-03-10 | Fully distributed P2P architecture with DHT, mixnet properties, message fragmentation. |
 | 0.3.0 | 2026-03-10 | Refocused on core product: offline messaging that works. Moved privacy research, DHT, mixnet, and fragmentation to FUTURE-RESEARCH.md. Tightened roadmap. Android elevated to Stage 2. |
 | 0.3.1 | 2026-03-10 | Restored core architectural commitment: no central server. Every phone is a server. Clarified what "internet when available" means (phone-to-phone, not phone-to-server). Added serverless architecture section. |
+| 0.4.0 | 2026-03-10 | Replaced serverless commitment with lightweight server (dumb encrypted message buffer). Server dramatically simplifies delivery when someone has internet. Phones still relay locally without it. Fully serverless architecture moved to FUTURE-RESEARCH.md. |
 
 ---
 
@@ -34,19 +35,34 @@ Messages don't need the internet to travel between phones. Bluetooth, Wi-Fi Dire
 
 The user doesn't need to know how the message got there. They just need to know it arrived.
 
-## 3. No Central Server
+## 3. The Server
 
-Every phone is simultaneously a client, a relay, and a server. There is no central infrastructure to build, maintain, pay for, or defend.
+A lightweight server acts as a **dumb encrypted message buffer** — a mailbox, not a platform.
 
-This is a core architectural commitment, not a future aspiration:
-- **Nothing to seize or shut down.** The network cannot be killed without taking every phone from every user.
-- **No server costs.** The community's phones _are_ the infrastructure.
-- **No company in the middle.** No one can change the terms, read messages, or hand data to governments.
-- **The network gets stronger as more people join.** Every new phone is another relay and storage node.
+### What it does
+- Stores opaque encrypted blobs it **cannot read**
+- Holds messages until the recipient's device picks them up
+- Acts as a relay when sender and recipient aren't near each other and no relay phones are available
 
-When a phone has internet, it doesn't connect to "our server." It connects directly to other phones that also have internet, or it pushes messages into the peer network. Internet is just another transport — a faster pipe between phones, not a dependency on centralized infrastructure.
+### What it doesn't do
+- Read, decrypt, or inspect any message content
+- Know anything about users beyond ephemeral connection metadata
+- Make decisions about routing or delivery
+- Store anything permanently — messages expire
 
-**The pragmatic path:** The protocol is designed so that no server is _required_. Early versions may include optional community-run relay nodes (an old Android phone plugged in at someone's house, a Raspberry Pi) to improve reliability. These are just nodes in the network with no special privileges — they store encrypted blobs they can't read and relay them like any other phone. Anyone can run one. They can disappear without breaking anything.
+### Why a server (for now)
+Without a server, a message between two people who are never physically near each other depends entirely on relay phones walking between them. In Kabala, that might work — people move predictably, the social graph is dense. But it's fragile and slow. A server collapses delivery time dramatically: any phone with even brief internet access flushes its queued messages to the server, and the recipient picks them up whenever they next get connectivity.
+
+The server is the **giant shortcut**. Instead of routing messages toward a specific destination through the mesh, you just route them toward any internet connection. Getting to the nearest internet connection is a much easier problem.
+
+### Properties
+- **Extremely lightweight** — text messages are hundreds of bytes. A single cheap cloud instance or even a Raspberry Pi could handle thousands of users.
+- **Trustless** — the server sees only encrypted blobs. Seizing it reveals nothing readable.
+- **Replaceable** — the protocol doesn't depend on _this_ server. Anyone can run one. Communities can run their own.
+- **Optional for local delivery** — messages between nearby phones travel directly via Bluetooth/Wi-Fi/LoRa without ever touching the server.
+
+### Long-term vision
+The server is a pragmatic starting point, not the end state. As the network grows, fully distributed alternatives (DHT, peer-to-peer relay) may replace or supplement it. See [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md).
 
 ## 4. Target Users
 
@@ -69,7 +85,7 @@ Journalists, NGOs, disaster response. Different value proposition (metadata resi
 4. If not, the message waits on the sender's phone
 5. When someone who knows both people passes near the sender, their phone silently picks up the message
 6. When that person later passes near the recipient, their phone delivers it
-7. If anyone in the chain gets internet, their phone can relay the message directly to the recipient's phone (or to another peer that's closer) — no server involved
+7. If anyone in the chain gets internet, their phone flushes the message to the server — the recipient picks it up whenever they next get connectivity
 
 Messages are encrypted end-to-end. Relay phones carry opaque blobs they can't read.
 
@@ -86,19 +102,19 @@ Messages are encrypted end-to-end. Relay phones carry opaque blobs they can't re
 │            Sync & Store-Forward                  │
 │  (Append-only logs, anti-entropy replication)    │
 ├──────────┬──────────┬───────────────────────────┤
-│  Loom    │Meshtastic│  Peer-to-peer over         │
-│ (Wi-Fi/  │  (LoRa   │  internet (when available, │
-│  AWDL)   │ via BLE) │  no central server)        │
+│  Loom    │Meshtastic│  Server                    │
+│ (Wi-Fi/  │  (LoRa   │  (Dumb encrypted buffer,   │
+│  AWDL)   │ via BLE) │  when internet available)  │
 └──────────┴──────────┴───────────────────────────┘
 ```
 
-Every layer is phone-to-phone. No box in this diagram is a server you run.
+Local transports (Loom, Meshtastic) work phone-to-phone with no server. The server is only involved when a phone has internet and wants to flush or fetch messages.
 
 ### Transports
 
 | Transport | Range | Bandwidth | Hardware | Internet Required |
 |-----------|-------|-----------|----------|-------------------|
-| Peer-to-peer over internet | Global | High | Phone | Yes |
+| Server (message buffer) | Global | High | Phone | Yes |
 | Loom over Wi-Fi | ~100m (same network) | High | Phone | No |
 | Loom over AWDL | ~30-100m (peer-to-peer) | Medium | Apple device | No |
 | Meshtastic LoRa | 1-10km+ | Very low (~250 B/s) | LoRa node + Phone | No |
@@ -132,7 +148,7 @@ These states update as information flows back through the network. In offline co
 ## 6. Encryption & Identity
 
 ### Design Principle
-No phone numbers. No accounts. No servers. Simple keypair cryptography with QR code exchange.
+No phone numbers. No accounts. Simple keypair cryptography with QR code exchange.
 
 ### How It Works
 
@@ -164,6 +180,7 @@ No phone numbers. No accounts. No servers. Simple keypair cryptography with QR c
 | Encryption | CryptoKit (P-256, HKDF, ChaCha20-Poly1305) | Apple platform |
 | UI | SwiftUI | Apple platform |
 | Persistence | SwiftData | Apple platform |
+| Server | Lightweight message buffer (Vapor, Hummingbird, or Cloudflare Worker) | Custom |
 
 ### Meshtastic BLE Integration
 
@@ -234,20 +251,23 @@ Prove that two phones can exchange encrypted messages without internet.
 
 **Success criteria:** Two iPhones can exchange encrypted messages over Loom (nearby Wi-Fi/AWDL) and over Meshtastic (LoRa via BLE), with automatic transport selection.
 
-### Stage 2 — Store-Forward & Android
+### Stage 2 — Server, Store-Forward & Android
 
-Make messages survive disconnection. Get onto the phones people actually use.
+Add the server for reliable delivery over internet. Make messages survive disconnection. Get onto the phones people actually use.
 
+- [ ] Lightweight server: receive encrypted blobs, hold until recipient fetches, expire after TTL
+- [ ] Phone → server flush: when internet is available, push queued messages to server
+- [ ] Server → phone fetch: when internet is available, pull pending messages from server
 - [ ] Append-only message logs with local persistence
-- [ ] Anti-entropy sync — devices exchange missing messages on reconnect
-- [ ] Store-and-carry-forward: relay devices hold and pass messages
+- [ ] Anti-entropy sync — devices exchange missing messages on reconnect (local)
+- [ ] Store-and-carry-forward: relay devices hold and pass messages (offline)
 - [ ] Clear delivery state UI (queued → carried → delivered → read)
 - [ ] Message expiry and storage management
 - [ ] Android app using Google Nearby Connections API
 - [ ] Testing on Tecno Spark / Infinix Hot
 - [ ] Battery optimization for aggressive Android OEMs
 
-**Success criteria:** A message sent when the recipient is out of range arrives later — via relay or reconnection — on a cheap Android phone, with acceptable battery impact.
+**Success criteria:** A message sent when the recipient is out of range arrives later — via server (if internet), relay phone, or reconnection — on a cheap Android phone, with acceptable battery impact.
 
 ### Stage 3 — Kabala Field Testing
 
@@ -339,7 +359,7 @@ The app must be useful even when internet is working. If people only open it dur
 
 ## 12. Principles
 
-1. **Every phone is a server.** No central infrastructure. The network is the people.
+1. **The server is a mailbox, not a platform.** It holds encrypted blobs it can't read. Local delivery works without it.
 2. **Offline is the default, not the exception.** Online is just a faster pipe.
 3. **The user never thinks about transport.** Messages just arrive.
 4. **Start with real people.** Build for Kabala first, generalize second.
