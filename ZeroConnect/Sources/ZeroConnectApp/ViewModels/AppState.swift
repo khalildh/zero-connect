@@ -13,6 +13,7 @@ final class AppState: ObservableObject {
 
     let identity: IdentityManager
     let router: MessageRouter
+    let store: MessageStore
 
     private let loomTransport: LoomTransport
     private let meshtasticTransport: MeshtasticTransport
@@ -21,6 +22,7 @@ final class AppState: ObservableObject {
         let identity = IdentityManager()
         self.identity = identity
         self.router = MessageRouter(identity: identity)
+        self.store = MessageStore()
         self.loomTransport = LoomTransport()
         self.meshtasticTransport = MeshtasticTransport()
 
@@ -31,6 +33,7 @@ final class AppState: ObservableObject {
 
         Task {
             await setupMessageHandler()
+            await loadPersistedData()
         }
     }
 
@@ -83,6 +86,7 @@ final class AppState: ObservableObject {
         }
 
         contacts.append(contact)
+        persistContacts()
     }
 
     func myQRString() async throws -> String {
@@ -90,6 +94,40 @@ final class AppState: ObservableObject {
         let deviceName = deviceName()
         let qr = QRCodeIdentity(publicKey: pubKeyData, displayName: deviceName)
         return try qr.encodeToString()
+    }
+
+    // MARK: - Persistence
+
+    private func loadPersistedData() async {
+        do {
+            let loadedContacts = try await store.loadContacts()
+            contacts = loadedContacts
+            let contactIds = loadedContacts.map(\.id)
+            conversations = try await store.loadAllConversations(contactIds: contactIds)
+        } catch {
+            print("[AppState] Failed to load persisted data: \(error)")
+        }
+    }
+
+    private func persistContacts() {
+        Task {
+            do {
+                try await store.saveContacts(contacts)
+            } catch {
+                print("[AppState] Failed to save contacts: \(error)")
+            }
+        }
+    }
+
+    private func persistMessages(for contactId: UUID) {
+        guard let messages = conversations[contactId] else { return }
+        Task {
+            do {
+                try await store.saveMessages(messages, for: contactId)
+            } catch {
+                print("[AppState] Failed to save messages: \(error)")
+            }
+        }
     }
 
     // MARK: - Private
@@ -145,6 +183,7 @@ final class AppState: ObservableObject {
             conversations[contactId] = []
         }
         conversations[contactId]?.append(stored)
+        persistMessages(for: contactId)
     }
 
     private func deviceName() -> String {
