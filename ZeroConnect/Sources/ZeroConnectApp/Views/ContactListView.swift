@@ -25,12 +25,23 @@ struct ContactListView: View {
                         .buttonStyle(.borderedProminent)
                     }
                 } else {
-                    List(appState.contacts) { contact in
-                        NavigationLink(destination: ConversationView(contact: contact)) {
-                            ContactRow(
-                                contact: contact,
-                                lastMessage: appState.conversations[contact.id]?.last
-                            )
+                    List {
+                        ForEach(appState.contacts) { contact in
+                            NavigationLink(destination: ConversationView(contact: contact)
+                                .onAppear { appState.markRead(contactId: contact.id) }
+                            ) {
+                                ContactRow(
+                                    contact: contact,
+                                    lastMessage: appState.conversations[contact.id]?.last,
+                                    unreadCount: appState.unreadCounts[contact.id] ?? 0
+                                )
+                            }
+                        }
+                        .onDelete { indices in
+                            let contactsToDelete = indices.map { appState.contacts[$0] }
+                            for contact in contactsToDelete {
+                                appState.deleteContact(contact)
+                            }
                         }
                     }
                 }
@@ -55,6 +66,7 @@ struct ContactListView: View {
 struct ContactRow: View {
     let contact: Contact
     let lastMessage: StoredMessage?
+    var unreadCount: Int = 0
 
     var body: some View {
         HStack {
@@ -70,7 +82,7 @@ struct ContactRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(contact.displayName)
                     .font(.body)
-                    .fontWeight(.medium)
+                    .fontWeight(unreadCount > 0 ? .bold : .medium)
 
                 if let last = lastMessage {
                     HStack(spacing: 4) {
@@ -87,10 +99,23 @@ struct ContactRow: View {
 
             Spacer()
 
-            if let last = lastMessage {
-                Text(last.message.timestamp, style: .time)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .trailing, spacing: 4) {
+                if let last = lastMessage {
+                    Text(last.message.timestamp, style: .time)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if unreadCount > 0 {
+                    Text("\(unreadCount)")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue)
+                        .clipShape(Capsule())
+                }
             }
         }
         .padding(.vertical, 4)

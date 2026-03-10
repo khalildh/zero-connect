@@ -11,6 +11,7 @@ final class AppState: ObservableObject {
     @Published var nearbyPeers: [TransportPeer] = []
     @Published var isDiscovering = false
     @Published var pendingQueueCount = 0
+    @Published var unreadCounts: [UUID: Int] = [:] // keyed by contact ID
 
     let identity: IdentityManager
     let router: MessageRouter
@@ -98,6 +99,21 @@ final class AppState: ObservableObject {
 
         contacts.append(contact)
         persistContacts()
+    }
+
+    func deleteContact(_ contact: Contact) {
+        contacts.removeAll { $0.id == contact.id }
+        conversations.removeValue(forKey: contact.id)
+        unreadCounts.removeValue(forKey: contact.id)
+        persistContacts()
+    }
+
+    func markRead(contactId: UUID) {
+        unreadCounts[contactId] = 0
+    }
+
+    var totalUnreadCount: Int {
+        unreadCounts.values.reduce(0, +)
     }
 
     func myQRString() async throws -> String {
@@ -194,6 +210,11 @@ final class AppState: ObservableObject {
             conversations[contactId] = []
         }
         conversations[contactId]?.append(stored)
+
+        if stored.direction == .received {
+            unreadCounts[contactId, default: 0] += 1
+        }
+
         persistMessages(for: contactId)
     }
 

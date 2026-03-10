@@ -10,6 +10,7 @@ struct ContentView: View {
                 .tabItem {
                     Label("Messages", systemImage: "message.fill")
                 }
+                .badge(appState.totalUnreadCount)
 
             NearbyPeersView()
                 .tabItem {
