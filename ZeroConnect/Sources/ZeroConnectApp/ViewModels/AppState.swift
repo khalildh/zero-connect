@@ -179,9 +179,7 @@ final class AppState: ObservableObject {
             var decryptedText: String?
             do {
                 let privateKey = try await identity.privateKey()
-                let senderPubKey = try P256.KeyAgreement.PublicKey(
-                    x963Representation: message.senderPublicKey
-                )
+                let senderPubKey = try PublicKeyUtils.decode(message.senderPublicKey)
                 let crypto = MessageCrypto()
                 let content = try crypto.decrypt(
                     encryptedPayload: message.encryptedPayload,

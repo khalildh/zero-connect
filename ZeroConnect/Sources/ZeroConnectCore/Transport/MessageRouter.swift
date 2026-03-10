@@ -162,9 +162,7 @@ public actor MessageRouter {
         let privateKey = try await identity.privateKey()
         let senderPubKeyData = try await identity.publicKeyData()
 
-        let recipientPubKey = try P256.KeyAgreement.PublicKey(
-            x963Representation: contact.publicKey
-        )
+        let recipientPubKey = try PublicKeyUtils.decode(contact.publicKey)
 
         let content = MessageContent(text: text)
         let (encrypted, nonce) = try crypto.encrypt(
