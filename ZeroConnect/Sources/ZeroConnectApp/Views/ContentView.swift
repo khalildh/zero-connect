@@ -20,6 +20,11 @@ struct ContentView: View {
                 .tabItem {
                     Label("Me", systemImage: "person.crop.circle")
                 }
+
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
+                }
         }
         .task {
             await appState.startDiscovery()

@@ -10,19 +10,29 @@ final class AppState: ObservableObject {
     @Published var conversations: [UUID: [StoredMessage]] = [:] // keyed by contact ID
     @Published var nearbyPeers: [TransportPeer] = []
     @Published var isDiscovering = false
+    @Published var pendingQueueCount = 0
 
     let identity: IdentityManager
     let router: MessageRouter
     let store: MessageStore
+    private let messageQueue: MessageQueue
 
     private let loomTransport: LoomTransport
     private let meshtasticTransport: MeshtasticTransport
 
+    var displayName: String {
+        deviceName()
+    }
+
     init() {
         let identity = IdentityManager()
+        let store = MessageStore()
+        let router = MessageRouter(identity: identity)
+
         self.identity = identity
-        self.router = MessageRouter(identity: identity)
-        self.store = MessageStore()
+        self.store = store
+        self.router = router
+        self.messageQueue = MessageQueue(router: router, store: store)
         self.loomTransport = LoomTransport()
         self.meshtasticTransport = MeshtasticTransport()
 
@@ -34,6 +44,7 @@ final class AppState: ObservableObject {
         Task {
             await setupMessageHandler()
             await loadPersistedData()
+            await messageQueue.start()
         }
     }
 
