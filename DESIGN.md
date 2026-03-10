@@ -11,6 +11,7 @@
 | 0.1.0 | 2026-03-10 | Initial design document. |
 | 0.2.0 | 2026-03-10 | Fully distributed P2P architecture with DHT, mixnet properties, message fragmentation. |
 | 0.3.0 | 2026-03-10 | Refocused on core product: offline messaging that works. Moved privacy research, DHT, mixnet, and fragmentation to FUTURE-RESEARCH.md. Tightened roadmap. Android elevated to Stage 2. |
+| 0.3.1 | 2026-03-10 | Restored core architectural commitment: no central server. Every phone is a server. Clarified what "internet when available" means (phone-to-phone, not phone-to-server). Added serverless architecture section. |
 
 ---
 
@@ -33,7 +34,21 @@ Messages don't need the internet to travel between phones. Bluetooth, Wi-Fi Dire
 
 The user doesn't need to know how the message got there. They just need to know it arrived.
 
-## 3. Target Users
+## 3. No Central Server
+
+Every phone is simultaneously a client, a relay, and a server. There is no central infrastructure to build, maintain, pay for, or defend.
+
+This is a core architectural commitment, not a future aspiration:
+- **Nothing to seize or shut down.** The network cannot be killed without taking every phone from every user.
+- **No server costs.** The community's phones _are_ the infrastructure.
+- **No company in the middle.** No one can change the terms, read messages, or hand data to governments.
+- **The network gets stronger as more people join.** Every new phone is another relay and storage node.
+
+When a phone has internet, it doesn't connect to "our server." It connects directly to other phones that also have internet, or it pushes messages into the peer network. Internet is just another transport — a faster pipe between phones, not a dependency on centralized infrastructure.
+
+**The pragmatic path:** The protocol is designed so that no server is _required_. Early versions may include optional community-run relay nodes (an old Android phone plugged in at someone's house, a Raspberry Pi) to improve reliability. These are just nodes in the network with no special privileges — they store encrypted blobs they can't read and relay them like any other phone. Anyone can run one. They can disappear without breaking anything.
+
+## 4. Target Users
 
 **Primary — Kabala, Sierra Leone:**
 Family and community members who want to message each other without paying for data or phone credits. Strong social bonds mean trust is already established — people know each other. Dominant devices: Tecno Spark, Infinix Hot, Itel — $50-80 Android phones. Languages: Krio (lingua franca), Kuranko, Mandinka, English.
@@ -44,7 +59,7 @@ Tech-savvy, motivated. Dense environment with no cell service. Willing to carry 
 **Tertiary — privacy/activist/humanitarian communities:**
 Journalists, NGOs, disaster response. Different value proposition (metadata resistance) addressed in [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md).
 
-## 4. How It Works
+## 5. How It Works
 
 ### The Simple Version
 
@@ -54,7 +69,7 @@ Journalists, NGOs, disaster response. Different value proposition (metadata resi
 4. If not, the message waits on the sender's phone
 5. When someone who knows both people passes near the sender, their phone silently picks up the message
 6. When that person later passes near the recipient, their phone delivers it
-7. If anyone in the chain gets internet, the message can travel instantly via the internet instead
+7. If anyone in the chain gets internet, their phone can relay the message directly to the recipient's phone (or to another peer that's closer) — no server involved
 
 Messages are encrypted end-to-end. Relay phones carry opaque blobs they can't read.
 
@@ -71,17 +86,19 @@ Messages are encrypted end-to-end. Relay phones carry opaque blobs they can't re
 │            Sync & Store-Forward                  │
 │  (Append-only logs, anti-entropy replication)    │
 ├──────────┬──────────┬───────────────────────────┤
-│  Loom    │Meshtastic│  Internet (when available) │
-│ (Wi-Fi/  │  (LoRa   │                            │
-│  AWDL)   │ via BLE) │                            │
+│  Loom    │Meshtastic│  Peer-to-peer over         │
+│ (Wi-Fi/  │  (LoRa   │  internet (when available, │
+│  AWDL)   │ via BLE) │  no central server)        │
 └──────────┴──────────┴───────────────────────────┘
 ```
+
+Every layer is phone-to-phone. No box in this diagram is a server you run.
 
 ### Transports
 
 | Transport | Range | Bandwidth | Hardware | Internet Required |
 |-----------|-------|-----------|----------|-------------------|
-| Internet | Global | High | Phone | Yes |
+| Peer-to-peer over internet | Global | High | Phone | Yes |
 | Loom over Wi-Fi | ~100m (same network) | High | Phone | No |
 | Loom over AWDL | ~30-100m (peer-to-peer) | Medium | Apple device | No |
 | Meshtastic LoRa | 1-10km+ | Very low (~250 B/s) | LoRa node + Phone | No |
@@ -112,7 +129,7 @@ Users need to understand what happened to their message:
 
 These states update as information flows back through the network. In offline conditions, "Queued" may persist for hours — the UI must make this feel normal, not broken.
 
-## 5. Encryption & Identity
+## 6. Encryption & Identity
 
 ### Design Principle
 No phone numbers. No accounts. No servers. Simple keypair cryptography with QR code exchange.
@@ -135,7 +152,7 @@ No phone numbers. No accounts. No servers. Simple keypair cryptography with QR c
 
 **Use a mature, reviewed encryption library.** Do not ship custom cryptographic implementations without external review.
 
-## 6. Technology Stack
+## 7. Technology Stack
 
 ### Stage 1 — iPhone Proof of Concept
 
@@ -198,7 +215,7 @@ Key Android-specific challenges:
 - App size and storage footprint on devices with 16-32GB total storage
 - Thermals — sustained background crypto on low-end chipsets
 
-## 7. Roadmap
+## 8. Roadmap
 
 ### Stage 1 — Nearby Encrypted Messaging (iPhone PoC)
 
@@ -258,7 +275,7 @@ See [FUTURE-RESEARCH.md](FUTURE-RESEARCH.md) for:
 - Burning Man deployment
 - Formal security analysis
 
-## 8. Distribution & Adoption
+## 9. Distribution & Adoption
 
 This is the hardest problem. Every technical predecessor — Briar, Serval, FireChat, Bridgefy — failed primarily on distribution, not technology.
 
@@ -285,7 +302,7 @@ The app is useless with one user. It's barely useful with ten. It only becomes v
 
 The app must be useful even when internet is working. If people only open it during outages, they'll forget about it between outages and uninstall. The app needs a reason to be the default messaging choice — or at least a frequent secondary one — so it's already installed and running when infrastructure fails.
 
-## 9. Open Questions
+## 10. Open Questions
 
 1. **Encryption library choice** — Use a mature, reviewed library. Do not write custom crypto. Evaluate libsignal (proven, heavy, C-based) vs lighter alternatives.
 2. **Loom identity ↔ app identity** — Loom uses P-256 in iCloud Keychain. Reuse Loom's identity as the app identity, or maintain separate keys?
@@ -295,7 +312,7 @@ The app must be useful even when internet is working. If people only open it dur
 6. **What's the killer first workflow?** — "Messaging" is too broad. What specific communication task do we solve first for Kabala? Needs field research.
 7. **Relay incentives** — Why would someone's phone carry messages for others? Battery cost is real. Reciprocity ("you relay for me, I relay for you") may be enough in a tight community, but needs validation.
 
-## 10. Pre-Build Checklist
+## 11. Pre-Build Checklist
 
 ### Security
 - [ ] Identify a security-knowledgeable advisor before writing encryption code
@@ -320,12 +337,13 @@ The app must be useful even when internet is working. If people only open it dur
 - [ ] Burning Man / festival market as revenue source for cross-subsidization
 - [ ] Explore: outdoor recreation, disaster preparedness, maritime as paying markets
 
-## 11. Principles
+## 12. Principles
 
-1. **Offline is the default, not the exception.** Online is just a faster pipe.
-2. **The user never thinks about transport.** Messages just arrive.
-3. **Start with real people.** Build for Kabala first, generalize second.
-4. **Simplest thing that works.** Add complexity only when the simple version isn't enough.
-5. **Learnable in 60 seconds.** If someone can't learn the app by watching another person use it, the UX has failed.
-6. **Security should come from defaults and architecture, not from expert user behavior.**
-7. **The first version is not a censorship-proof anonymity network.** It is a reliable offline-first encrypted messenger for people with intermittent connectivity and real-world devices.
+1. **Every phone is a server.** No central infrastructure. The network is the people.
+2. **Offline is the default, not the exception.** Online is just a faster pipe.
+3. **The user never thinks about transport.** Messages just arrive.
+4. **Start with real people.** Build for Kabala first, generalize second.
+5. **Simplest thing that works.** Add complexity only when the simple version isn't enough.
+6. **Learnable in 60 seconds.** If someone can't learn the app by watching another person use it, the UX has failed.
+7. **Security should come from defaults and architecture, not from expert user behavior.**
+8. **The first version is not a censorship-proof anonymity network.** It is a reliable offline-first encrypted messenger for people with intermittent connectivity and real-world devices.
